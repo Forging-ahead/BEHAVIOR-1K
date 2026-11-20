@@ -1,13 +1,27 @@
+"""Object taxonomy backed by a WordNet-style synset hierarchy.
+
+The :class:`ObjectTaxonomy` loads a JSON hierarchy file that organises every
+object concept (synset) into a directed tree.  Each synset node carries:
+
+- **categories** -- concrete object category names that map to 3-D assets.
+- **substances** -- substance names (e.g. ``"water"``) associated with the
+  synset.
+- **abilities** -- a dict of ability annotations (e.g. ``"cookable"``,
+  ``"openable"``) with optional parameters.
+
+The taxonomy is used throughout BDDL and OmniGibson to resolve synset
+references in activity definitions into concrete asset categories and to
+query object properties.
+"""
+
 import copy
 import json
-import pathlib
 
 import networkx as nx
 import bddl
+from bddl.config import GENERATED_DATA_DIR
 
-DEFAULT_HIERARCHY_FILE = (
-    pathlib.Path(__file__).parent / "generated_data/output_hierarchy_properties.json"
-)
+DEFAULT_HIERARCHY_FILE = GENERATED_DATA_DIR / "output_hierarchy_properties.json"
 
 
 class ObjectTaxonomy(object):
