@@ -35,12 +35,13 @@ class PredicateGoal(SuccessCondition):
         for idx in env_indices:
             self._goal_status[idx] = {"satisfied": [], "unsatisfied": []}
 
-    def _step(self, task, env, action):
+    def _step(self, task, env, action, env_indices=None):
         # Terminate if all goal conditions are met in the task
-        results = th.zeros(env.num_envs, dtype=th.bool)
-        for env_idx in range(env.num_envs):
+        indices = range(env.num_envs) if env_indices is None else env_indices
+        results = th.zeros(len(indices), dtype=th.bool)
+        for row, env_idx in enumerate(indices):
             done, self._goal_status[env_idx] = self._check_goal_fn(env_idx)
-            results[env_idx] = done
+            results[row] = done
         return results
 
     @property

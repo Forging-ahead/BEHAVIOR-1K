@@ -375,18 +375,19 @@ class PointNavigationTask(BaseTask):
             geodesic = self._get_geodesic_potential(env, env_idx)
             self._geodesic_dist[env_idx] = geodesic if geodesic is not None else 0.0
 
-    def _step_termination(self, env, action, infos=None):
+    def _step_termination(self, env, action, infos=None, env_indices=None):
         # Run super first
-        dones, infos = super()._step_termination(env=env, action=action, infos=infos)
+        dones, infos = super()._step_termination(env=env, action=action, infos=infos, env_indices=env_indices)
 
         # Add additional info per env
-        for env_idx in range(self._num_envs):
-            infos[env_idx]["path_length"] = self._path_length[env_idx].item()
+        indices = range(self._num_envs) if env_indices is None else env_indices
+        for row, env_idx in enumerate(indices):
             path_len = self._path_length[env_idx].item()
+            infos[row]["path_length"] = path_len
             geo_dist = self._geodesic_dist[env_idx].item()
-            infos[env_idx]["spl"] = (
-                float(infos[env_idx]["success"]) * min(1.0, geo_dist / path_len)
-                if dones[env_idx].item() and path_len != 0.0
+            infos[row]["spl"] = (
+                float(infos[row]["success"]) * min(1.0, geo_dist / path_len)
+                if dones[row].item() and path_len != 0.0
                 else 0.0
             )
 
@@ -472,7 +473,7 @@ class PointNavigationTask(BaseTask):
             self._floor, start_xy_pos, self._goal_pos[env_idx][:2], entire_path=entire_path, robot=robot
         )
 
-    def _step_visualization(self, env):
+    def _step_visualization(self, env, env_indices=None):
         """
         Step visualization
 
@@ -480,7 +481,7 @@ class PointNavigationTask(BaseTask):
             env (Environment): Environment instance
         """
         if self._visualize_path:
-            for env_idx in range(self._num_envs):
+            for env_idx in range(self._num_envs) if env_indices is None else env_indices:
                 shortest_path, _ = self.get_shortest_path_to_goal(env=env, env_idx=env_idx, entire_path=True)
                 floor_height = env.scenes[env_idx].get_floor_height(self._floor)
                 num_nodes = min(self._n_vis_waypoints, shortest_path.shape[0])
@@ -491,15 +492,16 @@ class PointNavigationTask(BaseTask):
                 for i in range(num_nodes, self._n_vis_waypoints):
                     self._waypoint_markers[env_idx][i].set_position_orientation(position=th.tensor([0.0, 0.0, 100.0]))
 
-    def step(self, env, action):
+    def step(self, env, action, env_indices=None):
         # Run super method first
-        reward, done, info = super().step(env=env, action=action)
+        reward, done, info = super().step(env=env, action=action, env_indices=env_indices)
 
         # Step visualization
-        self._step_visualization(env=env)
+        step_kwargs = {} if env_indices is None else {"env_indices": env_indices}
+        self._step_visualization(env=env, **step_kwargs)
 
         # Update other internal variables
-        for env_idx in range(self._num_envs):
+        for env_idx in range(self._num_envs) if env_indices is None else env_indices:
             robot = env.scenes[env_idx].robots[self._robot_idn]
             new_robot_pos = robot.states[Pose].get_value()[0]
             if self._current_robot_pos[env_idx] is not None:

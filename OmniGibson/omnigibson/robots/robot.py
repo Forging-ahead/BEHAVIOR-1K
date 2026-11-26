@@ -3146,7 +3146,7 @@ class Robot(USDObject, GymObservable):
 
         candidates_set, robot_contact_links = self._find_gripper_contacts(arm=arm)
         # If we're using assisted grasping, we further filter candidates via ray-casting
-        if self.grasping_mode == "assisted":
+        if self.grasping_mode == "assisted" and candidates_set:
             candidates_set_raycast = self._find_gripper_raycast_collisions(arm=arm)
             candidates_set = candidates_set.intersection(candidates_set_raycast)
 

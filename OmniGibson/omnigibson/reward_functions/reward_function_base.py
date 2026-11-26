@@ -21,41 +21,48 @@ class BaseRewardFunction(Registerable, metaclass=ABCMeta):
         self._info = None
 
     @abstractmethod
-    def _step(self, task, env, action):
+    def _step(self, task, env, action, env_indices=None):
         """
         Step the reward function and compute the reward at the current timestep. Overwritten by subclasses.
 
         Args:
             task (BaseTask): Task instance
             env (Environment): Environment instance
-            action (n-array): 1D flattened array of actions executed by all agents in the environment
+            action (n-array): One action row per selected scene
+            env_indices (sequence of int, optional): Scene indices in action and result order
 
         Returns:
             2-tuple:
-                - th.Tensor: (num_envs,) computed reward per env
+                - th.Tensor: (num_selected,) computed reward per env
                 - list[dict]: reward-related information per env
         """
         raise NotImplementedError()
 
-    def step(self, task, env, action):
+    def step(self, task, env, action, env_indices=None):
         """
         Step the reward function and compute the reward at the current timestep.
 
         Args:
             task (BaseTask): Task instance
             env (Environment): Environment instance
-            action (n-array): 1D flattened array of actions executed by all agents in the environment
+            action (n-array): One action row per selected scene
+            env_indices (sequence of int, optional): Scene indices in action and result order
 
         Returns:
             2-tuple:
-                - th.Tensor: (num_envs,) computed reward per env
+                - th.Tensor: (num_selected,) computed reward per env
                 - list[dict]: any reward-related information for this specific reward per env
         """
-        # Step internally and store output
-        self._reward, self._info = self._step(task=task, env=env, action=action)
+        if env_indices is None:
+            rewards, self._info = self._step(task=task, env=env, action=action)
+            self._reward = rewards.clone()
+            return rewards, deepcopy(self._info)
 
-        # Return reward and a copy of the info
-        return self._reward, deepcopy(self._info)
+        rewards, infos = self._step(task=task, env=env, action=action, env_indices=env_indices)
+        self._reward[env_indices] = rewards
+        for idx, info in zip(env_indices, infos):
+            self._info[idx] = info
+        return rewards, deepcopy(infos)
 
     def reset(self, task, env, env_indices):
         """

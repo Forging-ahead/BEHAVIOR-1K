@@ -27,11 +27,12 @@ class CollisionReward(BaseRewardFunction):
         # Run super
         super().__init__()
 
-    def _step(self, task, env, action):
+    def _step(self, task, env, action, env_indices=None):
         # Penalty is Reward is -self._r_collision if there were any collisions in the last timestep
-        rewards = th.zeros(env.num_envs, dtype=th.float32)
-        infos = [dict() for _ in range(env.num_envs)]
-        for env_idx in range(env.num_envs):
+        indices = range(env.num_envs) if env_indices is None else env_indices
+        rewards = th.zeros(len(indices), dtype=th.float32)
+        infos = [dict() for _ in indices]
+        for row, env_idx in enumerate(indices):
             robot = env.scenes[env_idx].robots[self._robot_idn]
             # Ignore floors and potentially robot's own prims as well
             floors = list(env.scenes[env_idx].object_registry("category", "floors", []))
@@ -39,5 +40,5 @@ class CollisionReward(BaseRewardFunction):
             in_contact = RigidContactAPI.is_in_contact(
                 scene_idx=robot.scene.idx, query_set=[robot], with_set=None, ignore_set=ignore_objs, current_only=False
             )
-            rewards[env_idx] = float(in_contact) * -self._r_collision
+            rewards[row] = float(in_contact) * -self._r_collision
         return rewards, infos

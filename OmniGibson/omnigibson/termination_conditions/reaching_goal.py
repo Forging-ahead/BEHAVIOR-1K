@@ -23,12 +23,13 @@ class ReachingGoal(SuccessCondition):
         # Run super init
         super().__init__()
 
-    def _step(self, task, env, action):
+    def _step(self, task, env, action, env_indices=None):
         # Terminate if point goal is reached (distance below threshold)
-        results = th.zeros(env.num_envs, dtype=th.bool)
-        for env_idx in range(env.num_envs):
+        indices = range(env.num_envs) if env_indices is None else env_indices
+        results = th.zeros(len(indices), dtype=th.bool)
+        for row, env_idx in enumerate(indices):
             robot = env.scenes[env_idx].robots[self._robot_idn]
             eef_pos = robot.get_eef_position()
             dist = T.l2_distance(eef_pos, task.get_goal_pos(env_idx))
-            results[env_idx] = dist < self._distance_tol
+            results[row] = dist < self._distance_tol
         return results

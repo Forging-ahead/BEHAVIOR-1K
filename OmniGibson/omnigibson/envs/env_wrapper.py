@@ -46,22 +46,29 @@ class EnvironmentWrapper(Wrapper, Registerable):
         # Run super
         super().__init__(obj=env)
 
-    def step(self, action, n_render_iterations=1):
+    def step(self, action, n_render_iterations=1, *, env_indices=None, get_obs=True, render=True):
         """
         By default, run the normal environment step() function
 
         Args:
             action (th.tensor): action to take in environment
             n_render_iterations (int): Number of rendering iterations to use before returning observations
+            env_indices (sequence of int or None): Scene indices in action and result row order.
+            get_obs (bool): Fetch observations for this step.
+            render (bool): Allow rendering during this step.
         Returns:
-            4-tuple:
+            5-tuple:
                 - (dict) observations from the environment
                 - (float) reward from the environment
                 - (bool) whether the current episode is terminated
                 - (bool) whether the current episode is truncated
                 - (dict) misc information
         """
-        return self.env.step(action, n_render_iterations=n_render_iterations)
+        if env_indices is None and get_obs and render:
+            return self.env.step(action, n_render_iterations=n_render_iterations)
+        return self.env.step(
+            action, n_render_iterations=n_render_iterations, env_indices=env_indices, get_obs=get_obs, render=render
+        )
 
     def reset(self, **kwargs):
         """

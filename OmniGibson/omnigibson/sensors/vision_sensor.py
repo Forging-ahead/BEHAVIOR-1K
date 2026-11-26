@@ -208,7 +208,7 @@ class VisionSensor(BaseSensor):
 
         # Create a new viewport to link to this camera or link to a pre-existing one
         viewport_name = self._load_config["viewport_name"]
-        should_create_viewport = viewport_name is not None or not gm.HEADLESS
+        should_create_viewport = viewport_name is not None or (not gm.HEADLESS and gm.RENDER_VIEWER_CAMERA)
         viewport = None
         if should_create_viewport and viewport_name is not None:
             vp_names_to_handles = {vp.name: vp for vp in lazy.omni.kit.viewport.window.get_viewport_window_instances()}
@@ -731,7 +731,8 @@ class VisionSensor(BaseSensor):
         # Also update render product and update all annotators
         with og.sim.editing_usd():
             for annotator in self._annotators.values():
-                annotator.detach([self._render_product.path])
+                if annotator is not None:
+                    annotator.detach([self._render_product.path])
 
             self._render_product.destroy()
             self._render_product = lazy.omni.replicator.core.create.render_product(
@@ -739,7 +740,8 @@ class VisionSensor(BaseSensor):
             )
 
             for annotator in self._annotators.values():
-                annotator.attach([self._render_product])
+                if annotator is not None:
+                    annotator.attach([self._render_product])
 
         # Requires 4 updates to propagate changes
         for i in range(4):
@@ -770,7 +772,8 @@ class VisionSensor(BaseSensor):
         # Also update render product and update all annotators
         with og.sim.editing_usd():
             for annotator in self._annotators.values():
-                annotator.detach([self._render_product.path])
+                if annotator is not None:
+                    annotator.detach([self._render_product.path])
 
             self._render_product.destroy()
             self._render_product = lazy.omni.replicator.core.create.render_product(
@@ -778,7 +781,8 @@ class VisionSensor(BaseSensor):
             )
 
             for annotator in self._annotators.values():
-                annotator.attach([self._render_product])
+                if annotator is not None:
+                    annotator.attach([self._render_product])
 
         # Requires 4 updates to propagate changes
         for i in range(4):
@@ -898,7 +902,7 @@ class VisionSensor(BaseSensor):
         if self._viewport is None:
             raise RuntimeError(
                 "Cannot set active_camera_path because this sensor has no viewport. "
-                "Set gm.HEADLESS=False to enable viewport textures."
+                "Set gm.HEADLESS=False and gm.RENDER_VIEWER_CAMERA=True to enable viewport textures."
             )
         self._viewport.viewport_api.set_active_camera(path)
         # Requires 6 updates to propagate changes

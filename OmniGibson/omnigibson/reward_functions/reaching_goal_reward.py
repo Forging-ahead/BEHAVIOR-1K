@@ -26,14 +26,15 @@ class ReachingGoalReward(BaseRewardFunction):
         # Run super
         super().__init__()
 
-    def _step(self, task, env, action):
+    def _step(self, task, env, action, env_indices=None):
         # Sparse reward is received if distance between robot_idn robot's eef and goal is below the distance threshold
-        rewards = th.zeros(env.num_envs, dtype=th.float32)
-        infos = [dict() for _ in range(env.num_envs)]
-        for env_idx in range(env.num_envs):
+        indices = range(env.num_envs) if env_indices is None else env_indices
+        rewards = th.zeros(len(indices), dtype=th.float32)
+        infos = [dict() for _ in indices]
+        for row, env_idx in enumerate(indices):
             robot = env.scenes[env_idx].robots[self._robot_idn]
             eef_pos = robot.get_eef_position()
             dist = T.l2_distance(eef_pos, task.get_goal_pos(env_idx))
             if dist < self._distance_tol:
-                rewards[env_idx] = self._r_reach
+                rewards[row] = self._r_reach
         return rewards, infos

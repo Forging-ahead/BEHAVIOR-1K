@@ -29,9 +29,10 @@ class Falling(FailureCondition):
         # Run super init
         super().__init__()
 
-    def _step(self, task, env, action):
-        results = th.zeros(env.num_envs, dtype=th.bool)
-        for env_idx in range(env.num_envs):
+    def _step(self, task, env, action, env_indices=None):
+        indices = range(env.num_envs) if env_indices is None else env_indices
+        results = th.zeros(len(indices), dtype=th.bool)
+        for row, env_idx in enumerate(indices):
             robot = env.scenes[env_idx].robots[self._robot_idn]
             pos, quat = robot.get_position_orientation()
             robot_z = pos[2]
@@ -44,5 +45,5 @@ class Falling(FailureCondition):
                 robot_up = T.quat_apply(quat, th.tensor([0, 0, 1], dtype=th.float32))
                 fell = robot_up[2] < self._tilt_tolerance
 
-            results[env_idx] = fell
+            results[row] = fell
         return results

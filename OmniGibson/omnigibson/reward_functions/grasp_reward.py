@@ -55,15 +55,16 @@ class GraspReward(BaseRewardFunction):
         # Run super
         super().__init__()
 
-    def _step(self, task, env, action):
+    def _step(self, task, env, action, env_indices=None):
         # Lazily populate per-scene object references
         if self._objs is None:
             self._objs = [env.scenes[i].object_registry("name", self.obj_name) for i in range(env.num_envs)]
 
-        rewards = th.zeros(env.num_envs, dtype=th.float32)
-        infos = [dict() for _ in range(env.num_envs)]
+        indices = range(env.num_envs) if env_indices is None else env_indices
+        rewards = th.zeros(len(indices), dtype=th.float32)
+        infos = [dict() for _ in indices]
 
-        for env_idx in range(env.num_envs):
+        for row, env_idx in enumerate(indices):
             obj = self._objs[env_idx]
             scene = env.scenes[env_idx]
             robot_idx = 0
@@ -77,11 +78,13 @@ class GraspReward(BaseRewardFunction):
             # and is currently grasping the desired object
             reward = 0.0
 
-            # Penalize large actions. action is shaped (num_envs, action_dim), so we must select
-            # this env's row and, within it, only the slice belonging to this robot (keyed by
-            # scene + robot, matching the action layout in Environment.step).
-            robot_action_start = sum(r.action_dim for r in scene.robots[:robot_idx])
-            robot_action = action[env_idx][robot_action_start : robot_action_start + robot.action_dim]
+            # Match the tensor and robot-name dictionary formats accepted by Environment.step.
+            scene_action = action[row]
+            if isinstance(scene_action, dict):
+                robot_action = scene_action[robot.name]
+            else:
+                robot_action_start = sum(r.action_dim for r in scene.robots[:robot_idx])
+                robot_action = scene_action[robot_action_start : robot_action_start + robot.action_dim]
             action_mag = th.sum(th.abs(robot_action))
             regularization_penalty = -(action_mag * self.regularization_coef)
             reward += regularization_penalty
@@ -151,8 +154,8 @@ class GraspReward(BaseRewardFunction):
                 info["postgrasp_dist_reward_factor"] = math.exp(-dist)
                 info["postgrasp_dist_reward"] = dist_reward
 
-            rewards[env_idx] = reward
-            infos[env_idx] = info
+            rewards[row] = reward
+            infos[row] = info
 
             # Update per-env tracking
             if self.prev_eef_pos is not None:

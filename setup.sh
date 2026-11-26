@@ -18,6 +18,7 @@ ACCEPT_CONDA_TOS=false
 ACCEPT_NVIDIA_EULA=false
 ACCEPT_DATASET_TOS=false
 CONFIRM_NO_CONDA=false
+USE_UV=false
 
 [ "$#" -eq 0 ] && HELP=true
 
@@ -47,6 +48,7 @@ while [[ $# -gt 0 ]]; do
         --accept-conda-tos) ACCEPT_CONDA_TOS=true; shift ;;
         --accept-nvidia-eula) ACCEPT_NVIDIA_EULA=true; shift ;;
         --accept-dataset-tos) ACCEPT_DATASET_TOS=true; shift ;;
+        --use-uv) USE_UV=true; shift ;;
         --confirm-no-conda) CONFIRM_NO_CONDA=true; shift ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
@@ -78,7 +80,12 @@ Options:
   --accept-conda-tos      Automatically accept Conda Terms of Service
   --accept-nvidia-eula    Automatically accept NVIDIA Isaac Sim EULA
   --accept-dataset-tos    Automatically accept BEHAVIOR Dataset Terms
+  --use-uv                Install Python packages with uv
   --confirm-no-conda      Skip confirmation prompt when not in a conda environment
+
+Environment:
+  ISAAC_SIM_WHEEL_PATH    Local directory of Isaac Sim wheels for the x86_64 installer
+  ISAAC_SIM_PYPI_URL      NVIDIA package index (default: https://pypi.nvidia.com)
 
 Example (core components): ./setup.sh --new-env --omnigibson --bddl --dataset
 Example (full customization): ./setup.sh --new-env my_env --omnigibson --bddl --dataset --joylo --eval --primitives --cuda-version 12.6
@@ -96,6 +103,20 @@ fi
 
 WORKDIR=$(pwd)
 ARCH=$(uname -m)
+NVIDIA_INDEX=${ISAAC_SIM_PYPI_URL:-https://pypi.nvidia.com}
+if [ "$USE_UV" = true ]; then
+    command -v uv >/dev/null || { echo "ERROR: uv package manager not found"; exit 1; }
+fi
+
+run_pip() {
+    if [ "$USE_UV" = true ]; then
+        local subcommand=$1
+        shift
+        uv pip "$subcommand" --python "$(command -v python)" "$@"
+    else
+        python -m pip "$@"
+    fi
+}
 
 # Check conda environment condition early (unless creating new environment)
 if [ "$NEW_ENV" = false ]; then
@@ -262,19 +283,23 @@ echo "Installing PyTorch with CUDA $CUDA_VERSION support..."
 # Determine the CUDA version string for pip URL (e.g., cu128, cu126, etc.)
 CUDA_VER_SHORT=$(echo "$CUDA_VERSION" | sed 's/\.//g')  # e.g. convert 12.8 to 128
 
-python -m pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 torchcodec==0.5 --index-url https://download.pytorch.org/whl/cu${CUDA_VER_SHORT}
+run_pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 torchcodec==0.5 --index-url https://download.pytorch.org/whl/cu${CUDA_VER_SHORT}
 
 echo "✓ PyTorch installation completed"
 
 # Install numpy <2 to avoid conflicts
 echo "Installing numpy..."
-python -m pip install "numpy<2"
+run_pip install "numpy<2"
 
 # Install BDDL
 if [ "$BDDL" = true ]; then
     echo "Installing BDDL..."
     [ ! -d "bddl3" ] && { echo "ERROR: bddl directory not found"; exit 1; }
-    python -m pip install -e "$WORKDIR/bddl3"
+    if [ "$USE_UV" = true ]; then
+        run_pip install "$WORKDIR/bddl3"
+    else
+        run_pip install -e "$WORKDIR/bddl3"
+    fi
 fi
 
 # Install OmniGibson with Isaac Sim
@@ -309,12 +334,16 @@ if [ "$OMNIGIBSON" = true ]; then
         EXTRAS="[${EXTRAS%,}]"
     fi
 
-    python -m pip install -e "$WORKDIR/OmniGibson$EXTRAS" --no-build-isolation
+    run_pip install -e "$WORKDIR/OmniGibson$EXTRAS" --no-build-isolation
 
     # Install pre-commit for dev setup
     if [ "$DEV" = true ]; then
         echo "Setting up pre-commit..."
-        conda install -c conda-forge pre-commit -y
+        if [ "$USE_UV" = true ]; then
+            run_pip install pre-commit
+        else
+            conda install -c conda-forge pre-commit -y
+        fi
         cd "$WORKDIR/OmniGibson"
         pre-commit install || true  # Ignore errors here in case the directory is not a git repo
         cd "$WORKDIR"
@@ -336,7 +365,7 @@ if [ "$OMNIGIBSON" = true ]; then
 
         # For aarch, do alternative install via direct one-liner
         if [ "$ARCH" = "aarch64" ]; then
-            python -m pip install isaacsim[all,extscache]==5.1.0 --extra-index-url https://pypi.nvidia.com
+            run_pip install isaacsim[all,extscache]==5.1.0 --extra-index-url "$NVIDIA_INDEX"
         else
             # Helper functions
             check_glibc_old() {
@@ -382,23 +411,36 @@ if [ "$OMNIGIBSON" = true ]; then
                 for pkg in "${packages[@]}"; do
                     local pkg_name=${pkg%-*}
                     local filename="${pkg}-cp311-none-manylinux_2_35_${ARCH}.whl"
-                    local url="https://pypi.nvidia.com/${pkg_name//_/-}/$filename"
+                    local url="${NVIDIA_INDEX%/}/${pkg_name//_/-}/$filename"
                     local filepath="$temp_dir/$filename"
                     local attempt
 
-                    echo "Downloading $pkg..."
-                    for attempt in 1 2 3 4 5; do
-                        if curl "${curl_opts[@]}" "$url" -o "$filepath"; then
-                            break
-                        fi
-                        if [ "$attempt" -eq 5 ]; then
-                            echo "ERROR: Failed to download $pkg"
+                    if [ -n "$ISAAC_SIM_WHEEL_PATH" ]; then
+                        if [ ! -f "$ISAAC_SIM_WHEEL_PATH/$filename" ]; then
+                            echo "ERROR: Missing Isaac Sim wheel: $ISAAC_SIM_WHEEL_PATH/$filename"
                             rm -rf "$temp_dir"
                             return 1
                         fi
-                        echo "Retrying $pkg ($attempt/5)..."
-                        sleep 5
-                    done
+                        # Link into the temporary directory so retagging never changes the cached wheel.
+                        if ! ln -s "$(cd "$ISAAC_SIM_WHEEL_PATH" && pwd)/$filename" "$filepath"; then
+                            rm -rf "$temp_dir"
+                            return 1
+                        fi
+                    else
+                        echo "Downloading $pkg..."
+                        for attempt in 1 2 3 4 5; do
+                            if curl "${curl_opts[@]}" "$url" -o "$filepath"; then
+                                break
+                            fi
+                            if [ "$attempt" -eq 5 ]; then
+                                echo "ERROR: Failed to download $pkg"
+                                rm -rf "$temp_dir"
+                                return 1
+                            fi
+                            echo "Retrying $pkg ($attempt/5)..."
+                            sleep 5
+                        done
+                    fi
 
                     # Rename for older GLIBC
                     if check_glibc_old; then
@@ -411,7 +453,7 @@ if [ "$OMNIGIBSON" = true ]; then
                 done
 
                 echo "Installing Isaac Sim packages..."
-                python -m pip install "${wheel_files[@]}"
+                run_pip install "${wheel_files[@]}"
                 rm -rf "$temp_dir"
 
                 # Verify installation
@@ -442,9 +484,9 @@ if [ "$OMNIGIBSON" = true ]; then
     fi
     
     # Force reinstall cffi 1.17.1 to resolve compatibility issues with Isaac Sim extensions
-    python -m pip install --force-reinstall cffi==1.17.1
+    run_pip install --force-reinstall cffi==1.17.1
     # Force reinstall websockets >= 15.0.1 because it's been overwritten by Isaac Sim with an older version
-    python -m pip install --force-reinstall "websockets>=15.0.1"
+    run_pip install --force-reinstall "websockets>=15.0.1"
 
     echo "OmniGibson installation completed successfully!"
 fi
@@ -453,21 +495,21 @@ fi
 if [ "$JOYLO" = true ]; then
     echo "Installing JoyLo..."
     [ ! -d "joylo" ] && { echo "ERROR: joylo directory not found"; exit 1; }
-    python -m pip install -e "$WORKDIR/joylo"
+    run_pip install -e "$WORKDIR/joylo"
 fi
 
 # Install Eval
 if [ "$EVAL" = true ]; then
     # get torch version via pip and install corresponding torch-cluster
-    TORCH_VERSION=$(python -m pip show torch | grep Version | cut -d " " -f 2)
-    python -m pip install torch-cluster -f https://data.pyg.org/whl/torch-${TORCH_VERSION}.html
+    TORCH_VERSION=$(run_pip show torch | grep Version | cut -d " " -f 2)
+    run_pip install torch-cluster -f https://data.pyg.org/whl/torch-${TORCH_VERSION}.html
 fi
 
 # Install asset pipeline
 if [ "$ASSET_PIPELINE" = true ]; then
     echo "Installing asset pipeline..."
     [ ! -d "asset_pipeline" ] && { echo "ERROR: asset_pipeline directory not found"; exit 1; }
-    python -m pip install -r "$WORKDIR/asset_pipeline/requirements.txt"
+    run_pip install -r "$WORKDIR/asset_pipeline/requirements.txt"
 fi
 
 # Install datasets

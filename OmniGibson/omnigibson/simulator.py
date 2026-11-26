@@ -194,7 +194,15 @@ def _launch_app():
     # If multi_gpu is used, og.sim.render() will cause a segfault when called during on_contact callbacks,
     # e.g. when an attachment joint is being created due to contacts (create_joint calls og.sim.render() internally).
     gpu_id = None if gm.GPU_ID is None else int(gm.GPU_ID)
-    config_kwargs = {"headless": gm.HEADLESS or bool(gm.REMOTE_STREAMING), "multi_gpu": False}
+    config_kwargs = {
+        "headless": gm.HEADLESS or bool(gm.REMOTE_STREAMING),
+        "multi_gpu": False,
+        "extra_args": [
+            "--/plugins/carb.tasking.plugin/threadCount=8",
+            "--/plugins/omni.tbb.globalcontrol/maxThreadCount=4",
+        ],
+    }
+
     if gpu_id is not None:
         config_kwargs["active_gpu"] = gpu_id
         config_kwargs["physics_gpu"] = gpu_id
@@ -1418,11 +1426,13 @@ def _launch_simulator(*args, **kwargs):
                                     # is playing
                                     obj.states[state_type].update()
 
-                    for scene in self.scenes:
-                        for obj in scene.objects:
-                            # Only update visuals for objects that have been initialized so far
-                            if obj.initialized:
-                                obj.update_visuals()
+                    # Skip visual updates when rendering is disabled (pure-physics steps).
+                    if self._render_on_step:
+                        for scene in self.scenes:
+                            for obj in scene.objects:
+                                # Only update visuals for objects that have been initialized so far
+                                if obj.initialized:
+                                    obj.update_visuals()
 
                 # Possibly run transition rule step
                 if gm.ENABLE_TRANSITION_RULES:
@@ -1718,8 +1728,10 @@ def _launch_simulator(*args, **kwargs):
             # Store the original value, set the new value, yield, and then reset the original value
             original_value = self._render_on_step
             self._render_on_step = value
-            yield
-            self._render_on_step = original_value
+            try:
+                yield
+            finally:
+                self._render_on_step = original_value
 
         @contextlib.contextmanager
         def slowed(self, slow_dt=1e-6):

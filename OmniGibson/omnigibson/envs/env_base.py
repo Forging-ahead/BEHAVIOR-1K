@@ -1,5 +1,6 @@
 from collections import OrderedDict
 from collections.abc import Iterable
+from contextlib import nullcontext
 from copy import deepcopy
 import os
 
@@ -659,21 +660,21 @@ class Environment(gym.Env, GymObservable, Recreatable):
         assert self._scene_graph_builders, "Scene graph builder must be specified in config!"
         return self._scene_graph_builders[env_idx].get_scene_graph()
 
-    def _populate_info(self, infos):
+    def _populate_info(self, infos, env_indices=None):
         """
         Populate info dictionary with any useful information.
 
         Args:
-            infos (list[dict]): Information dictionaries to populate, one per env
+            infos (list[dict]): Information dictionaries to populate, in env_indices order
+            env_indices (Iterable[int]): Scene index corresponding to each info
 
         Returns:
             list[dict]: Information dictionaries with added info
         """
-        for env_idx in range(self.num_envs):
-            infos[env_idx]["episode_length"] = self._current_steps[env_idx].item()
-
-        for i, builder in enumerate(self._scene_graph_builders):
-            infos[i]["scene_graph"] = builder.get_scene_graph()
+        for info, env_idx in zip(infos, range(self.num_envs) if env_indices is None else env_indices):
+            info["episode_length"] = self._current_steps[env_idx].item()
+            if self._scene_graph_builders:
+                info["scene_graph"] = self._scene_graph_builders[env_idx].get_scene_graph()
 
     def _convert_action_dict_to_tensor(self, action_dict):
         """Convert a single action dict's values to tensors.
@@ -707,6 +708,9 @@ class Environment(gym.Env, GymObservable, Recreatable):
             return [self._convert_action_dict_to_tensor(action)]
         elif isinstance(action, list) and len(action) > 0 and isinstance(action[0], dict):
             return [self._convert_action_dict_to_tensor(a) for a in action]
+        elif isinstance(action, (list, tuple)) and action and isinstance(action[0], th.Tensor) and action[0].ndim == 1:
+            # One action tensor per selected scene.
+            return th.stack(action).float()
         elif isinstance(action, Iterable):
             # Convert numpy arrays and lists to tensors
             action = th.as_tensor(action, dtype=th.float)
@@ -715,7 +719,7 @@ class Environment(gym.Env, GymObservable, Recreatable):
             return action
         return action
 
-    def step(self, action, n_render_iterations=1):
+    def step(self, action, n_render_iterations=1, *, env_indices=None, get_obs=True, render=True):
         """
         Apply robot's action and return the next state, reward, done and info,
         following OpenAI Gym's convention
@@ -723,22 +727,37 @@ class Environment(gym.Env, GymObservable, Recreatable):
         Args:
             action (gym.spaces.Dict or dict or list[dict] or th.tensor): robot actions. If a dict is specified,
                 each entry should map robot name to corresponding action. If a th.tensor, it should be the flattened,
-                concatenated set of actions. For multi-env, should be (num_envs, action_dim) shaped for tensors,
-                or a list of dicts (one per env) for dict actions.
+                concatenated set of actions. Supply one row or dictionary per selected scene.
             n_render_iterations (int): Number of rendering iterations to use before returning observations
+            env_indices (sequence of int or None): Scenes receiving actions, in input and result row order.
+                Defaults to all scenes. Every scene still shares the simulator's physics step.
+            get_obs (bool): Fetch observations. If false, the observation list contains None for each row.
+            render (bool): Allow rendering during this step. Disable with get_obs=False for intermediate actions.
         Returns:
             5-tuple:
                 - list[dict]: states, i.e. next observations per env
-                - th.Tensor: (num_envs,) rewards, i.e. reward at this current timestep
-                - th.Tensor: (num_envs,) terminated bool, i.e. whether this episode ended due to a failure or success
-                - th.Tensor: (num_envs,) truncated bool, i.e. whether this episode ended due to a time limit etc.
+                - th.Tensor: reward at this timestep for each selected scene
+                - th.Tensor: terminated bool for each selected scene (failure or success)
+                - th.Tensor: truncated bool for each selected scene (time limit, etc.)
                 - list[dict]: info per env, i.e. dictionary with any useful information
         """
         # Pre-processing before stepping simulation
+        indices = range(self.num_envs)
+        if env_indices is not None:
+            env_indices = th.as_tensor(env_indices, device="cpu")
+            if env_indices.ndim != 1 or env_indices.dtype not in (th.uint8, th.int8, th.int16, th.int32, th.int64):
+                raise ValueError("env_indices must be a one-dimensional sequence of integer scene indices")
+            indices = env_indices.tolist()
+            if not indices or len(set(indices)) != len(indices) or min(indices) < 0 or max(indices) >= self.num_envs:
+                raise ValueError(f"Expected distinct scene indices in [0, {self.num_envs}), got {indices}")
+            # Explicitly selecting the full batch in its natural order is the normal step path.
+            env_indices = None if indices == list(range(self.num_envs)) else env_indices.long()
         action = self._convert_action_to_tensor(action)
         if action is not None:
-            for env_idx in range(self.num_envs):
-                env_action = action[env_idx]
+            if len(action) != len(indices):
+                raise ValueError(f"Expected {len(indices)} action rows, got {len(action)}")
+            for row, env_idx in enumerate(indices):
+                env_action = action[row]
 
                 scene = self._scenes[env_idx]
 
@@ -758,52 +777,55 @@ class Environment(gym.Env, GymObservable, Recreatable):
                 for robot in scene.robots:
                     robot.apply_action(action_dict[robot.name])
 
-        # Step simulation
-        og.sim.step()
+        # All scenes share one physics clock, even when actions target only a subset.
+        with nullcontext() if render else og.sim.render_on_step(False):
+            og.sim.step()
 
-        # Render any additional times requested
-        for _ in range(n_render_iterations - 1):
-            og.sim.render()
+        if render:
+            for _ in range(n_render_iterations - 1):
+                og.sim.render()
 
-        # Grab observations
-        obs_list, obs_info_list = self.get_obs()
+        if get_obs:
+            obs_list, obs_info_list = self.get_obs(env_indices=env_indices)
+        else:
+            obs_list = [None] * len(indices)
 
-        # Step the scene graph builders if necessary
-        for builder, scene in zip(self._scene_graph_builders, self._scenes):
-            builder.step(scene)
+        if self._scene_graph_builders:
+            for env_idx in indices:
+                self._scene_graph_builders[env_idx].step(self._scenes[env_idx])
 
-        # Grab reward, done, and info, and populate with internal info
-        rewards, dones, infos = self.task.step(self, action)
-        self._populate_info(infos)
-        for env_idx in range(self.num_envs):
-            infos[env_idx]["obs_info"] = obs_info_list[env_idx]
+        if env_indices is None:
+            rewards, dones, infos = self.task.step(self, action)
+        else:
+            rewards, dones, infos = self.task.step(self, action, env_indices=env_indices)
+        self._populate_info(infos, indices)
+        if get_obs:
+            for row, info in enumerate(infos):
+                info["obs_info"] = obs_info_list[row]
 
-        # Split terminated vs truncated per env
-        terminateds = th.zeros(self.num_envs, dtype=th.bool)
-        truncateds = th.zeros(self.num_envs, dtype=th.bool)
-        for env_idx in range(self.num_envs):
-            for tc_name, tc_data in infos[env_idx]["done"]["termination_conditions"].items():
+        terminateds = th.zeros(len(indices), dtype=th.bool)
+        truncateds = th.zeros(len(indices), dtype=th.bool)
+        for row, info in enumerate(infos):
+            for tc_name, tc_data in info["done"]["termination_conditions"].items():
                 if tc_data["done"]:
                     if tc_name == "timeout":
-                        truncateds[env_idx] = True
+                        truncateds[row] = True
                     else:
-                        terminateds[env_idx] = True
+                        terminateds[row] = True
 
         assert th.all((terminateds | truncateds) == dones), "Terminated and truncated must match done!"
 
-        # Auto-reset only done envs
-        done_mask = dones
-        if self._automatic_reset and done_mask.any():
-            done_indices = th.where(done_mask)[0]
-            for env_idx in done_indices:
-                # Add lost observation to our information dict, and reset
-                infos[env_idx.item()]["last_observation"] = obs_list[env_idx.item()]
-            reset_obs_list, reset_info = self.reset(env_indices=done_indices)
-            for i, env_idx in enumerate(done_indices):
-                obs_list[env_idx.item()] = reset_obs_list[i]
+        if self._automatic_reset and dones.any():
+            done_rows = th.where(dones)[0].tolist()
+            done_indices = th.tensor([indices[row] for row in done_rows])
+            reset_result = self.reset(env_indices=done_indices, get_obs=get_obs)
+            if get_obs:
+                reset_obs_list, _ = reset_result
+                for row, reset_obs in zip(done_rows, reset_obs_list):
+                    infos[row]["last_observation"] = obs_list[row]
+                    obs_list[row] = reset_obs
 
-        # Increment step
-        self._current_steps += 1
+        self._current_steps[indices] += 1
         return obs_list, rewards, terminateds, truncateds, infos
 
     def render(self):

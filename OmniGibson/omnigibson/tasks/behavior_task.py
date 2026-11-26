@@ -305,9 +305,13 @@ class BehaviorTask(BaseTask):
         # Use presampled robot pose if specified (only available for officially supported mobile manipulators)
         if self.use_presampled_robot_pose:
             for env_idx in env_indices:
+                presampled_poses = env.scenes[env_idx].get_task_metadata(key="robot_poses")
+                if not presampled_poses:
+                    # The scene reset already restored the robot's initial pose.
+                    continue
                 robot = self.get_agent(env, env_idx)
                 available_poses = get_presampled_robot_poses(
-                    env.scenes[env_idx].get_task_metadata(key="robot_poses"),
+                    presampled_poses,
                     robot_model=robot.model,
                     pose_key=self.presampled_pose_key,
                 )
@@ -749,14 +753,14 @@ class BehaviorTask(BaseTask):
 
         return low_dim_obs, dict()
 
-    def _step_termination(self, env, action, infos=None):
+    def _step_termination(self, env, action, infos=None, env_indices=None):
         # Run super first
-        dones, infos = super()._step_termination(env=env, action=action, infos=infos)
+        dones, infos = super()._step_termination(env=env, action=action, infos=infos, env_indices=env_indices)
 
         # Add additional info per env
         goal_status = self._termination_conditions["predicate"].goal_status
-        for env_idx in range(self._num_envs):
-            infos[env_idx]["goal_status"] = goal_status[env_idx]
+        for info, env_idx in zip(infos, range(self._num_envs) if env_indices is None else env_indices):
+            info["goal_status"] = goal_status[env_idx]
 
         return dones, infos
 

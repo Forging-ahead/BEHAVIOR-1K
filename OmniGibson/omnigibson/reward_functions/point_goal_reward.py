@@ -21,9 +21,12 @@ class PointGoalReward(BaseRewardFunction):
         # Run super
         super().__init__()
 
-    def _step(self, task, env, action):
+    def _step(self, task, env, action, env_indices=None):
         # Reward received when the pointgoal success condition is met
         # self._pointgoal.success is (num_envs,) bool tensor
-        rewards = th.where(self._pointgoal.success, self._r_pointgoal, 0.0)
-        infos = [dict() for _ in range(env.num_envs)]
+        success = self._pointgoal.success
+        if env_indices is not None:
+            success = success[env_indices]
+        rewards = th.where(success, self._r_pointgoal, 0.0)
+        infos = [dict() for _ in range(len(rewards))]
         return rewards, infos

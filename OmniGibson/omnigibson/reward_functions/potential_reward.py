@@ -47,13 +47,14 @@ class PotentialReward(BaseRewardFunction):
         for idx in env_indices:
             self._potential[idx] = self._potential_fcn(env, idx)
 
-    def _step(self, task, env, action):
+    def _step(self, task, env, action, env_indices=None):
         # Reward is proportional to the potential difference between the current and previous timestep
-        rewards = th.zeros(env.num_envs, dtype=th.float32)
-        infos = [dict() for _ in range(env.num_envs)]
-        for env_idx in range(env.num_envs):
+        indices = range(env.num_envs) if env_indices is None else env_indices
+        rewards = th.zeros(len(indices), dtype=th.float32)
+        infos = [dict() for _ in indices]
+        for row, env_idx in enumerate(indices):
             new_potential = self._potential_fcn(env, env_idx)
-            rewards[env_idx] = (self._potential[env_idx] - new_potential) * self._r_potential
+            rewards[row] = (self._potential[env_idx] - new_potential) * self._r_potential
             # Update internal potential
             self._potential[env_idx] = new_potential
         return rewards, infos

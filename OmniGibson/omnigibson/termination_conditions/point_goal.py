@@ -26,7 +26,7 @@ class PointGoal(SuccessCondition):
         # Run super init
         super().__init__()
 
-    def _step(self, task, env, action):
+    def _step(self, task, env, action, env_indices=None):
         # Make sure task is of type PointNavigation -- we import at runtime to avoid circular imports
         from omnigibson.tasks.point_navigation_task import PointNavigationTask
 
@@ -34,10 +34,11 @@ class PointGoal(SuccessCondition):
             task, PointNavigationTask
         ), f"Cannot use {self.__class__.__name__} with a non-PointNavigationTask task instance!"
         # Terminate if point goal is reached (distance below threshold)
-        results = th.zeros(env.num_envs, dtype=th.bool)
-        for env_idx in range(env.num_envs):
+        indices = range(env.num_envs) if env_indices is None else env_indices
+        results = th.zeros(len(indices), dtype=th.bool)
+        for row, env_idx in enumerate(indices):
             current = task.get_current_pos(env, env_idx)
             goal = task.get_goal_pos(env_idx)
             dist = T.l2_distance(current[self._distance_axes], goal[self._distance_axes])
-            results[env_idx] = dist < self._distance_tol
+            results[row] = dist < self._distance_tol
         return results

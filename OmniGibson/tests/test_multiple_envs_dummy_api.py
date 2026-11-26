@@ -97,6 +97,29 @@ class TestStepAndReset:
         assert truncateds.shape == (NUM_ENVS,) and truncateds.dtype == th.bool
         assert isinstance(infos, list) and len(infos) == NUM_ENVS
 
+    def test_step_selected_scenes(self, make_multi_env):
+        env = make_multi_env(NUM_ENVS)
+        robots = [scene.robots[0] for scene in env.scenes]
+        idle_action = robots[1].dump_action()
+
+        observations, _, _, _, infos = env.step(
+            {robots[0].name: th.zeros(robots[0].action_dim)}, env_indices=[0], get_obs=False, render=False
+        )
+        assert observations == [None]
+        assert "obs_info" not in infos[0]
+
+        # Input row 0 goes to scene 2. Scene 0 already executed one action.
+        actions = [th.full((robots[2].action_dim,), 0.25), th.full((robots[0].action_dim,), -0.25)]
+        observations, rewards, terminated, truncated, infos = env.step(actions, env_indices=[2, 0])
+
+        assert len(observations) == 2
+        assert rewards.shape == terminated.shape == truncated.shape == (2,)
+        assert [info["episode_length"] for info in infos] == [0, 1]
+        assert env.episode_steps.tolist() == [2, 0, 1]
+        assert th.equal(robots[2].dump_action(), actions[0])
+        assert th.equal(robots[0].dump_action(), actions[1])
+        assert robots[1].dump_action() is idle_action
+
     def test_selective_reset(self, make_multi_env):
         """Resetting env_indices=[1] only resets scene 1, leaving 0 and 2 unchanged."""
         env = make_multi_env(NUM_ENVS)

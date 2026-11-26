@@ -36,9 +36,9 @@ class MaxCollision(FailureCondition):
             self._n_collisions = th.zeros(env.num_envs, dtype=th.int64)
         self._n_collisions[env_indices] = 0
 
-    def _step(self, task, env, action):
+    def _step(self, task, env, action, env_indices=None):
         # Terminate if the robot has collided more than self._max_collisions times
-        for env_idx in range(env.num_envs):
+        for env_idx in range(env.num_envs) if env_indices is None else env_indices:
             robot = env.scenes[env_idx].robots[self._robot_idn]
             floors = list(env.scenes[env_idx].object_registry("category", "floors", []))
             ignore_objs = floors + [robot] if self._ignore_self_collisions else floors
@@ -46,4 +46,5 @@ class MaxCollision(FailureCondition):
                 scene_idx=robot.scene.idx, query_set=[robot], with_set=None, ignore_set=ignore_objs, current_only=False
             )
             self._n_collisions[env_idx] += int(in_contact)
-        return self._n_collisions > self._max_collisions
+        collisions = self._n_collisions if env_indices is None else self._n_collisions[env_indices]
+        return collisions > self._max_collisions

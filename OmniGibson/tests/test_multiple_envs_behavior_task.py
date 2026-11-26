@@ -279,6 +279,29 @@ class TestBehaviorTaskGoalCompletion:
         assert abs(env.task.get_potential(env, 0) - (-1.0)) < 1e-6, "env 0 potential not -1.0 at success"
         assert env.task.get_potential(env, 1) > -1.0, "env 1 potential indicates success without placement"
 
+    def test_selected_step_defers_other_scene_goal_and_reward(self, behavior_env):
+        env = behavior_env
+        actions = _zero_actions(env)
+        _, previous_rewards, _, _, _ = env.step(actions)
+        initial_steps = env.episode_steps.clone()
+        cans, ashcan = _goal_objects(env, 1)
+        for can in cans:
+            assert _place_inside(can, ashcan)
+
+        # Scene 1 already satisfies the goal, but only scene 0 receives this action.
+        _, rewards, done, _, infos = env.step(actions[[0]], env_indices=[0])
+        assert len(infos) == 1 and not done.item() and abs(rewards.item()) < 1e-3
+        assert not env.task.success[1] and not env.task.done[1]
+        assert th.equal(env.episode_steps, initial_steps + th.tensor([1, 0]))
+
+        # Scene 1 should receive its *first* goal reward now, with its info in result row 0.
+        _, rewards, done, _, infos = env.step(actions[[1]], env_indices=[1])
+        assert done.item() and abs(rewards.item() - R_POTENTIAL) < 1e-3
+        assert infos[0]["done"]["success"] and not infos[0]["done"]["goal_status"]["unsatisfied"]
+        assert not env.task.done[0] and abs(env.task.reward[0].item()) < 1e-3
+        assert previous_rewards[1].item() == 0
+        assert th.equal(env.episode_steps, initial_steps + 1)
+
     def test_all_envs_completion(self, behavior_env):
         """Completing every env makes every env succeed (all combination)."""
         env = behavior_env
@@ -358,6 +381,29 @@ class TestBehaviorTaskPartialReset:
 
     The dummy_api version of this test only moves a robot in a near-empty scene; this one exercises
     BehaviorTask's per-env scene/agent reset."""
+
+    def test_missing_robot_poses_keeps_scene_reset_pose(self, behavior_env, monkeypatch):
+        env = behavior_env
+        scene = env.scenes[1]
+        robot = scene.robots[0]
+        selected = th.tensor([1])
+        # The baseline is the pose restored from the initial scene snapshot.
+        with monkeypatch.context() as patch:
+            patch.setattr(env.task, "use_presampled_robot_pose", False)
+            env.reset(env_indices=selected, get_obs=False)
+        expected_pos, expected_orn = [v.clone() for v in robot.get_position_orientation(frame="scene")]
+        other_pos = env.scenes[0].robots[0].get_position_orientation(frame="scene")[0].clone()
+        robot.set_position_orientation(position=expected_pos + th.tensor([0.5, 0.0, 0.0]), frame="scene")
+
+        get_metadata = scene.get_task_metadata
+        monkeypatch.setattr(scene, "get_task_metadata", lambda key: None if key == "robot_poses" else get_metadata(key))
+        env.reset(env_indices=selected, get_obs=False)
+        pos, orn = robot.get_position_orientation(frame="scene")
+        th.testing.assert_close(pos, expected_pos, atol=1e-3, rtol=0)
+        assert abs(th.dot(orn, expected_orn).item()) > 0.999
+        th.testing.assert_close(
+            env.scenes[0].robots[0].get_position_orientation(frame="scene")[0], other_pos, atol=1e-3, rtol=0
+        )
 
     def test_selective_reset(self, behavior_env):
         """Resetting env_indices=[1] only resets scene 1, leaving scene 0 unchanged."""

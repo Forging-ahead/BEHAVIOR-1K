@@ -217,7 +217,11 @@ class BaseTask(GymObservable, Registerable, metaclass=ABCMeta):
         self._reward[env_indices] = 0.0
         self._done[env_indices] = False
         self._success[env_indices] = False
-        self._info = None  # info is rebuilt each step
+        if len(env_indices) == self._num_envs:
+            self._info = None  # info is rebuilt each step
+        elif self._info is not None:
+            for idx in env_indices:
+                self._info[idx] = {}
 
     def reset(self, env, env_indices=None):
         """
@@ -241,69 +245,75 @@ class BaseTask(GymObservable, Registerable, metaclass=ABCMeta):
         for reward_function in self._reward_functions.values():
             reward_function.reset(self, env, env_indices)
 
-    def _step_termination(self, env, action, infos=None):
+    def _step_termination(self, env, action, infos=None, env_indices=None):
         """
         Step and aggregate termination conditions
 
         Args:
             env (Environment): Environment instance
-            action (n-array): 1D flattened array of actions executed by all agents in the environment
+            action (n-array): One action row per selected scene
+            env_indices (sequence of int, optional): Scene indices in action and result order
             infos (None or list[dict]): If provided, a list of per-env info dicts to accumulate into.
                 If None, fresh info dicts are created.
 
         Returns:
             2-tuple:
-                - th.Tensor: (num_envs,) bool tensor of dones
+                - th.Tensor: (num_selected,) bool tensor of dones
                 - list[dict]: per-env info dicts
         """
         # Get all dones and successes from individual termination conditions
+        num_rows = self._num_envs if env_indices is None else len(env_indices)
+        step_kwargs = {} if env_indices is None else {"env_indices": env_indices}
         if infos is not None:
-            for i in range(self._num_envs):
+            for i in range(num_rows):
                 if "termination_conditions" not in infos[i]:
                     infos[i]["termination_conditions"] = dict()
         else:
-            infos = [{"termination_conditions": dict()} for _ in range(self._num_envs)]
-        dones = th.zeros(self._num_envs, dtype=th.bool)
-        successes = th.zeros(self._num_envs, dtype=th.bool)
+            infos = [{"termination_conditions": dict()} for _ in range(num_rows)]
+        dones = th.zeros(num_rows, dtype=th.bool)
+        successes = th.zeros(num_rows, dtype=th.bool)
 
         for name, termination_condition in self._termination_conditions.items():
-            d, s = termination_condition.step(self, env, action)
+            d, s = termination_condition.step(self, env, action, **step_kwargs)
             dones = dones | d
             successes = successes | s
-            for env_idx in range(self._num_envs):
+            for env_idx in range(num_rows):
                 infos[env_idx]["termination_conditions"][name] = {
                     "done": d[env_idx].item(),
                     "success": s[env_idx].item(),
                 }
 
-        for env_idx in range(self._num_envs):
+        for env_idx in range(num_rows):
             infos[env_idx]["success"] = successes[env_idx].item()
 
         return dones, infos
 
-    def _step_reward(self, env, action, infos=None):
+    def _step_reward(self, env, action, infos=None, env_indices=None):
         """
         Step and aggregate reward functions
 
         Args:
             env (Environment): Environment instance
-            action (n-array): 1D flattened array of actions executed by all agents in the environment
+            action (n-array): One action row per selected scene
+            env_indices (sequence of int, optional): Scene indices in action and result order
             infos (None or list[dict]): If provided, a list of per-env info dicts to accumulate into.
                 If None, fresh info dicts are created.
 
         Returns:
             2-tuple:
-                - th.Tensor: (num_envs,) float tensor of total rewards
+                - th.Tensor: (num_selected,) float tensor of total rewards
                 - list[dict]: per-env info dicts
         """
         # Aggregate rewards over all reward functions
-        infos = infos if infos is not None else [dict() for _ in range(self._num_envs)]
-        total_rewards = th.zeros(self._num_envs, dtype=th.float32)
+        num_rows = self._num_envs if env_indices is None else len(env_indices)
+        step_kwargs = {} if env_indices is None else {"env_indices": env_indices}
+        infos = infos if infos is not None else [dict() for _ in range(num_rows)]
+        total_rewards = th.zeros(num_rows, dtype=th.float32)
 
         for reward_name, reward_function in self._reward_functions.items():
-            rewards, reward_infos = reward_function.step(self, env, action)
+            rewards, reward_infos = reward_function.step(self, env, action, **step_kwargs)
             total_rewards += rewards
-            for env_idx in range(self._num_envs):
+            for env_idx in range(num_rows):
                 infos[env_idx][reward_name] = reward_infos[env_idx]
                 if "reward_breakdown" not in infos[env_idx]:
                     infos[env_idx]["reward_breakdown"] = dict()
@@ -361,18 +371,19 @@ class BaseTask(GymObservable, Registerable, metaclass=ABCMeta):
         else:
             return [self.get_obs(env, env_idx=i, flatten_low_dim=flatten_low_dim) for i in range(self._num_envs)]
 
-    def step(self, env, action):
+    def step(self, env, action, env_indices=None):
         """
-        Perform task-specific step for every timestep
+        Step the task for all scenes or for the specified scenes in the given order.
 
         Args:
             env (Environment): Environment instance
-            action (n-array): 1D flattened array of actions executed by all agents in the environment
+            action (n-array): One action row per selected scene
+            env_indices (sequence of int, optional): Scene indices corresponding to the action rows
 
         Returns:
             3-tuple:
-                - th.Tensor: (num_envs,) reward tensor
-                - th.Tensor: (num_envs,) done bool tensor
+                - th.Tensor: (num_selected,) reward tensor
+                - th.Tensor: (num_selected,) done bool tensor
                 - list[dict]: per-env info dicts
         """
         # Make sure we're initialized
@@ -380,16 +391,29 @@ class BaseTask(GymObservable, Registerable, metaclass=ABCMeta):
 
         # We calculate termination conditions first and then rewards
         # (since some rewards can rely on termination conditions to update)
-        dones, done_infos = self._step_termination(env=env, action=action)
-        rewards, reward_infos = self._step_reward(env=env, action=action)
+        step_kwargs = {} if env_indices is None else {"env_indices": env_indices}
+        dones, done_infos = self._step_termination(env=env, action=action, **step_kwargs)
+        rewards, reward_infos = self._step_reward(env=env, action=action, **step_kwargs)
 
         # Update the internal state of this task
-        self._reward = rewards
-        self._done = dones
-        self._success = th.tensor([di["success"] for di in done_infos], dtype=th.bool)
-        self._info = [{"reward": reward_infos[i], "done": done_infos[i]} for i in range(self._num_envs)]
+        successes = th.tensor([di["success"] for di in done_infos], dtype=th.bool)
+        infos = [{"reward": r, "done": d} for r, d in zip(reward_infos, done_infos)]
+        if env_indices is None:
+            # A subsequent indexed step or automatic reset updates these caches in place.
+            self._reward = rewards.clone()
+            self._done = dones.clone()
+            self._success = successes
+            self._info = infos
+        else:
+            self._reward[env_indices] = rewards
+            self._done[env_indices] = dones
+            self._success[env_indices] = successes
+            if self._info is None:
+                self._info = [{} for _ in range(self._num_envs)]
+            for idx, info in zip(env_indices, infos):
+                self._info[idx] = info
 
-        return self._reward, self._done, deepcopy(self._info)
+        return rewards, dones, deepcopy(infos)
 
     @property
     def name(self):
